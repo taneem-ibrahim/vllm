@@ -5,6 +5,7 @@ import importlib
 import os
 from collections.abc import Callable, Sequence
 from functools import cached_property
+from typing import overload
 
 from openai.types.responses.response_format_text_json_schema_config import (
     ResponseFormatTextJSONSchemaConfig,
@@ -212,6 +213,25 @@ class ToolParserManager:
             )
         """
         cls.lazy_parsers[name] = (module_path, class_name)
+
+    @overload
+    @classmethod
+    def register_module(
+        cls,
+        name: str | list[str] | None = None,
+        force: bool = True,
+        module: None = None,
+    ) -> Callable[[type[ToolParser]], type[ToolParser]]: ...
+
+    @overload
+    @classmethod
+    def register_module(
+        cls,
+        name: str | list[str] | None = None,
+        force: bool = True,
+        *,
+        module: type[ToolParser],
+    ) -> type[ToolParser]: ...
 
     @classmethod
     def register_module(
