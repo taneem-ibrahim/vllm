@@ -387,7 +387,9 @@ class Glm4MoeModelToolParser(ToolParser):
                             e,
                         )
                 self._finish_tool_call()
-                return self._emit_tool_args_delta(frag_or_none) if frag_or_none else None
+                return (
+                    self._emit_tool_args_delta(frag_or_none) if frag_or_none else None
+                )
 
             if key_pos == -1:
                 return None
