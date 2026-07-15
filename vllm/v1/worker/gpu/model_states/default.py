@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
+from vllm.utils.torch_utils import PIN_MEMORY
 from vllm.v1.core.sched.output import NewRequestData
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.worker.gpu.attn_utils import (
@@ -45,8 +46,21 @@ class DefaultModelState(ModelState):
         self.mm_pruner = maybe_create_mm_pruner(
             self.model_config, model, self.rope_state, encoder_cache
         )
+        self.token_type_ids: dict[str, torch.Tensor] = {}
 
     def add_request(self, req_index: int, new_req_data: NewRequestData) -> None:
+        pooling_params = new_req_data.pooling_params
+        if pooling_params is not None and pooling_params.extra_kwargs is not None:
+            token_type_start = pooling_params.extra_kwargs.get(
+                "compressed_token_type_ids"
+            )
+            if token_type_start is not None:
+                assert new_req_data.prompt_token_ids is not None
+                self.token_type_ids[new_req_data.req_id] = (
+                    torch.arange(len(new_req_data.prompt_token_ids), dtype=torch.int32)
+                    >= token_type_start
+                ).to(torch.int32)
+
         if self.rope_state is not None:
             assert new_req_data.prefill_token_ids is not None
             self.rope_state.init_prefill_positions(
@@ -55,6 +69,9 @@ class DefaultModelState(ModelState):
                 new_req_data.prefill_token_ids,
                 mm_features=new_req_data.mm_features,
             )
+
+    def remove_request(self, req_id: str) -> None:
+        self.token_type_ids.pop(req_id, None)
 
     def apply_staged_writes(self) -> None:
         if self.rope_state is not None:
@@ -108,8 +125,29 @@ class DefaultModelState(ModelState):
     def prepare_inputs(
         self, input_batch: InputBatch, req_states: RequestState
     ) -> dict[str, torch.Tensor | None]:
+        model_inputs: dict[str, torch.Tensor | None] = {}
+        if self.token_type_ids:
+            token_type_ids_cpu = torch.zeros(
+                input_batch.num_tokens_after_padding,
+                dtype=torch.int32,
+                pin_memory=PIN_MEMORY,
+            )
+            offset = 0
+            for i, req_id in enumerate(input_batch.req_ids):
+                num_tokens = int(input_batch.num_scheduled_tokens[i])
+                request_token_type_ids = self.token_type_ids.get(req_id)
+                if request_token_type_ids is not None:
+                    start = int(input_batch.num_computed_tokens_np[i])
+                    token_type_ids_cpu[offset : offset + num_tokens].copy_(
+                        request_token_type_ids[start : start + num_tokens]
+                    )
+                offset += num_tokens
+            model_inputs["token_type_ids"] = token_type_ids_cpu.to(
+                self.device, non_blocking=True
+            )
+
         if self.rope_state is None:
-            return {}  # Common case (1D positions).
+            return model_inputs  # Common case (1D positions).
 
         self.rope_state.prepare_positions(
             input_batch.idx_mapping,
@@ -117,8 +155,10 @@ class DefaultModelState(ModelState):
             req_states.prefill_len.gpu,
             req_states.num_computed_tokens.gpu,
         )
-        positions = self.rope_state.get_positions(input_batch.num_tokens_after_padding)
-        return {"positions": positions}
+        model_inputs["positions"] = self.rope_state.get_positions(
+            input_batch.num_tokens_after_padding
+        )
+        return model_inputs
 
     def prepare_dummy_inputs(self, num_reqs: int, num_tokens: int) -> dict[str, Any]:
         model_inputs = {}
@@ -169,7 +209,7 @@ class DefaultModelState(ModelState):
                 mm_features=self.encoder_cache.mm_features,
                 sliding_window=self.model_config.get_sliding_window(),
             )
-        attn_metadata = build_attn_metadata(
+        return build_attn_metadata(
             attn_groups=attn_groups,
             num_reqs=num_reqs,
             num_tokens=num_tokens,
@@ -189,4 +229,3 @@ class DefaultModelState(ModelState):
             for_cudagraph_capture=for_capture,
             rswa_prefix_lens=input_batch.prompt_lens,
         )
-        return attn_metadata
