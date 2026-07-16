@@ -4,6 +4,7 @@ import pytest
 import torch
 from transformers import AutoModelForSequenceClassification
 
+from vllm.config import PoolerConfig
 from vllm.platforms import current_platform
 
 
@@ -77,6 +78,8 @@ def test_bert_model_runner_v2(hf_runner, vllm_runner, monkeypatch) -> None:
         # sbert_ce_default_activation_function=Identity raw logits.
         hf_model.config.problem_type = "regression"
         hf_outputs = [hf_model.classify(prompts) for prompts in prompt_batches]
+        tokenizer = hf_model.tokenizer
+        num_labels = hf_model.model.config.num_labels
 
     text_1, text_2 = score_inputs
     text_pairs = [[text_1, document] for document in text_2]
@@ -98,6 +101,23 @@ def test_bert_model_runner_v2(hf_runner, vllm_runner, monkeypatch) -> None:
         vllm_tensor = torch.tensor(vllm_batch)
         assert vllm_tensor.shape == hf_tensor.shape
         assert torch.allclose(vllm_tensor, hf_tensor, rtol=1e-2, atol=1e-4)
+
+    with vllm_runner(
+        model,
+        runner="pooling",
+        dtype="half",
+        max_model_len=64,
+        pooler_config=PoolerConfig(task="token_classify"),
+    ) as vllm_model:
+        token_outputs = [
+            vllm_model.token_classify(prompts) for prompts in prompt_batches
+        ]
+
+    for prompts, token_batch in zip(prompt_batches, token_outputs):
+        for prompt, token_output in zip(prompts, token_batch):
+            prompt_len = len(tokenizer.encode(prompt))
+            assert token_output.shape == (prompt_len, num_labels)
+            assert torch.isfinite(token_output).all()
 
     assert torch.allclose(
         torch.tensor(vllm_scores),

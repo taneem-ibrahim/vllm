@@ -3,7 +3,11 @@
 
 import pytest
 import torch
-from transformers import AutoModelForMaskedLM, AutoModelForTokenClassification
+from transformers import (
+    AutoConfig,
+    AutoModelForMaskedLM,
+    AutoModelForTokenClassification,
+)
 
 from tests.models.registry import HF_EXAMPLE_MODELS
 from tests.models.utils import softmax
@@ -67,6 +71,33 @@ def test_bert_models(
         torch.testing.assert_close(hf_output, vllm_output, atol=3.2e-2, rtol=1e-3)
 
 
+@pytest.mark.core_model
+@torch.inference_mode
+def test_bert_model_runner_v2_parity(vllm_runner, monkeypatch) -> None:
+    model = "boltuix/NeuroBERT-NER"
+    prompts = [
+        "short input",
+        "a longer input that exercises mixed sequence lengths",
+    ]
+    num_labels = AutoConfig.from_pretrained(model).num_labels
+
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "0")
+    with vllm_runner(model, max_model_len=None, dtype="float") as vllm_model:
+        tokenizer = vllm_model.get_llm().get_tokenizer()
+        prompt_lens = [len(tokenizer.encode(prompt)) for prompt in prompts]
+        v1_outputs = vllm_model.token_classify(prompts)
+
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
+    with vllm_runner(model, max_model_len=None, dtype="float") as vllm_model:
+        v2_outputs = vllm_model.token_classify(prompts)
+
+    for prompt_len, v1_output, v2_output in zip(prompt_lens, v1_outputs, v2_outputs):
+        expected_shape = (prompt_len, num_labels)
+        assert v1_output.shape == expected_shape
+        assert v2_output.shape == expected_shape
+        torch.testing.assert_close(v1_output, v2_output, atol=3.2e-2, rtol=1e-3)
+
+
 @pytest.mark.parametrize("model", ["disham993/electrical-ner-ModernBERT-base"])
 @pytest.mark.parametrize("dtype", ["float"])
 @pytest.mark.flaky(reruns=3)
@@ -75,6 +106,7 @@ def test_modernbert_models(
     hf_runner,
     vllm_runner,
     example_prompts,
+    monkeypatch,
     model: str,
     dtype: str,
 ) -> None:
@@ -87,6 +119,7 @@ def test_modernbert_models(
         "flaky tolerance enabled due to numerical precision variance."
     )
 
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
     with vllm_runner(model, max_model_len=None, dtype=dtype) as vllm_model:
         vllm_outputs = vllm_model.token_classify(example_prompts)
 
@@ -117,16 +150,24 @@ def test_modernbert_models(
         torch.testing.assert_close(hf_output, vllm_output, atol=3.2e-2, rtol=1e-3)
 
 
-@pytest.mark.parametrize("model", ["Davlan/xlm-roberta-base-ner-hrl"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "Davlan/xlm-roberta-base-ner-hrl",
+        "Jean-Baptiste/roberta-large-ner-english",
+    ],
+)
 @pytest.mark.parametrize("dtype", ["float"])
 @torch.inference_mode
 def test_xlm_roberta_models(
     hf_runner,
     vllm_runner,
     example_prompts,
+    monkeypatch,
     model: str,
     dtype: str,
 ) -> None:
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
     with vllm_runner(model, max_model_len=None, dtype=dtype) as vllm_model:
         vllm_outputs = vllm_model.token_classify(example_prompts)
 
@@ -178,12 +219,14 @@ PRIVACY_FILTER_PROMPTS = [
 def test_openai_privacy_filter(
     hf_runner,
     vllm_runner,
+    monkeypatch,
     model: str,
     dtype: str,
 ) -> None:
     model_info = HF_EXAMPLE_MODELS.find_hf_info(model)
     model_info.check_transformers_version(on_fail="skip")
 
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
     with vllm_runner(model, max_model_len=None, dtype=dtype) as vllm_model:
         vllm_outputs = vllm_model.token_classify(PRIVACY_FILTER_PROMPTS)
 
@@ -257,12 +300,14 @@ def test_bert_for_masked_lm(
     hf_runner,
     vllm_runner,
     example_prompts,
+    monkeypatch,
     model: str,
     dtype: str,
 ) -> None:
     # BertForMaskedLM exposes its MLM head as a token-level pooling task; the
     # head applies softmax over the vocabulary, so each output row is a
     # distribution (matching HF's softmax(logits) below).
+    monkeypatch.setenv("VLLM_USE_V2_MODEL_RUNNER", "1")
     with vllm_runner(model, max_model_len=None, dtype=dtype) as vllm_model:
         vllm_outputs = vllm_model.token_classify(example_prompts)
 

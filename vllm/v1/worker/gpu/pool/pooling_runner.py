@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from vllm.config import VllmConfig
+from vllm.config import ModelConfig, VllmConfig
 from vllm.model_executor.models import VllmModelForPooling, is_pooling_model
 from vllm.pooling_params import PoolingParams
 from vllm.tasks import PoolingTask
@@ -16,7 +16,9 @@ from vllm.v1.pool.metadata import PoolingMetadata, PoolingStates
 from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.states import RequestState
 
-_SUPPORTED_TASKS: frozenset[PoolingTask] = frozenset({"embed", "classify"})
+_SUPPORTED_TASKS: frozenset[PoolingTask] = frozenset(
+    {"embed", "classify", "token_classify"}
+)
 
 
 class PoolingRunner:
@@ -24,12 +26,15 @@ class PoolingRunner:
         self.model = cast(VllmModelForPooling, model)
         self.model_config = vllm_config.model_config
         self.max_num_reqs = vllm_config.scheduler_config.max_num_seqs
-        self.supported_tasks = frozenset(self.get_supported_tasks(model))
+        self.supported_tasks = frozenset(
+            self.get_supported_tasks(model, self.model_config)
+        )
         if not self.supported_tasks:
             model_tasks = sorted(self.model.pooler.get_supported_tasks())
+            runner_tasks = sorted(self._get_enabled_tasks(self.model_config))
             raise ValueError(
-                "Model Runner V2 supports only sequence-level pooling tasks "
-                f"{sorted(_SUPPORTED_TASKS)}, but this model supports {model_tasks}. "
+                "Model Runner V2 supports pooling tasks "
+                f"{runner_tasks}, but this model supports {model_tasks}. "
                 "Set VLLM_USE_V2_MODEL_RUNNER=0 to use this model."
             )
         self.pooling_params: dict[int, PoolingParams] = {}
@@ -37,10 +42,22 @@ class PoolingRunner:
         self.prompt_token_ids: dict[int, torch.Tensor] = {}
 
     @staticmethod
-    def get_supported_tasks(model: nn.Module) -> list[PoolingTask]:
+    def _get_enabled_tasks(model_config: ModelConfig) -> frozenset[PoolingTask]:
+        if model_config.attn_type == "encoder_only":
+            # ModelConfig.attn_type includes bidirectional decoder architectures.
+            # is_chunked_prefill_supported disables chunking for this group, so
+            # AllPool does not accumulate partial states in hidden_states_cache.
+            return _SUPPORTED_TASKS
+        return _SUPPORTED_TASKS - {"token_classify"}
+
+    @staticmethod
+    def get_supported_tasks(
+        model: nn.Module, model_config: ModelConfig
+    ) -> list[PoolingTask]:
         if not is_pooling_model(model):
             return []
-        return sorted(model.pooler.get_supported_tasks() & _SUPPORTED_TASKS)
+        enabled_tasks = PoolingRunner._get_enabled_tasks(model_config)
+        return sorted(model.pooler.get_supported_tasks() & enabled_tasks)
 
     def add_request(
         self,
