@@ -1238,6 +1238,7 @@ class Worker(WorkerBase):
         )
         self._pp_send_work = handles[1:]
 
+        # On non-final PP ranks, pool() only performs post-processing.
         if self.use_v2_model_runner and self.model_runner.is_pooling_model:
             return self.model_runner.pool()  # type: ignore
         return None
