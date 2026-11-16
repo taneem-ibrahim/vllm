@@ -9,6 +9,7 @@ pub mod streaming;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -261,6 +262,67 @@ pub fn get_backend(kind: BackendKind) -> Result<Backend> {
         kind if kind.is_pooling() => Ok(Backend::Pooling(pooling::PoolingBackend { kind })),
         _ => unreachable!(),
     }
+}
+
+/// POST `payload` as JSON and read the complete response, for the backends
+/// that answer with one non-streamed body.
+///
+/// `output.prompt_len` holds the client-side count on entry and is replaced
+/// by `prompt_tokens(body)` when the server reports its usage.
+pub(crate) async fn send_json_request(
+    input: &RequestFuncInput,
+    client: &reqwest::Client,
+    payload: &serde_json::Value,
+    mut output: RequestFuncOutput,
+    prompt_tokens: impl FnOnce(&[u8]) -> Option<u64>,
+) -> RequestFuncOutput {
+    let headers = build_headers(
+        Some("application/json"),
+        &input.extra_headers,
+        &input.request_id,
+    );
+
+    let mut request = client.post(&input.api_url);
+    for (k, v) in &headers {
+        request = request.header(k, v);
+    }
+
+    let st = Instant::now();
+
+    let response = match request.json(payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            output.error = format!("Request failed: {e}");
+            return output;
+        }
+    };
+
+    if response.status().is_success() {
+        // Stop the clock after the body, as Python does: a large embedding
+        // response takes a while to transfer.
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(e) => {
+                output.error = format!("Failed to read response body: {e}");
+                return output;
+            }
+        };
+        let latency = st.elapsed().as_secs_f64();
+        output.latency = latency;
+        output.ttft = latency;
+        output.success = true;
+
+        // Keep the client-side prompt_len when the server reports no usage.
+        if let Some(tokens) = prompt_tokens(&body) {
+            output.prompt_len = tokens as usize;
+        }
+    } else {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        output.error = format!("HTTP {status}: {body}");
+    }
+
+    output
 }
 
 /// Cached API key to avoid per-request env var syscall.

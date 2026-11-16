@@ -11,9 +11,7 @@
 //! - `vllm-pooling`: vLLM `/pooling` endpoint
 //! - `vllm-rerank`: vLLM `/v1/rerank` endpoint (query + documents)
 
-use std::time::Instant;
-
-use crate::backends::{RequestFuncInput, RequestFuncOutput, build_headers};
+use crate::backends::{RequestFuncInput, RequestFuncOutput, send_json_request};
 use crate::cli::BackendKind;
 use crate::error::Result;
 
@@ -26,6 +24,10 @@ struct PoolingResponse {
 #[derive(serde::Deserialize)]
 struct PoolingUsage {
     prompt_tokens: Option<u64>,
+}
+
+fn prompt_tokens(body: &[u8]) -> Option<u64> {
+    serde_json::from_slice::<PoolingResponse>(body).ok()?.usage?.prompt_tokens
 }
 
 #[derive(Clone)]
@@ -42,7 +44,7 @@ impl PoolingBackend {
         let payload = self.build_payload(input);
 
         // Preserve client-side prompt_len as fallback if server doesn't report usage.
-        let mut output = RequestFuncOutput {
+        let output = RequestFuncOutput {
             prompt_len: input.prompt_len,
             num_input_sequences: match self.kind {
                 BackendKind::OpenaiEmbeddings | BackendKind::VllmPooling => {
@@ -58,59 +60,7 @@ impl PoolingBackend {
             ..Default::default()
         };
 
-        let headers = build_headers(
-            Some("application/json"),
-            &input.extra_headers,
-            &input.request_id,
-        );
-
-        let mut request = client.post(&input.api_url);
-        for (k, v) in &headers {
-            request = request.header(k, v);
-        }
-
-        let st = Instant::now();
-
-        let response = match request.json(&payload).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                output.error = format!("Request failed: {e}");
-                return Ok(output);
-            }
-        };
-
-        if response.status().is_success() {
-            // Stop the clock after the body, as Python does: a large embedding
-            // response takes a while to transfer.
-            let body = match response.bytes().await {
-                Ok(body) => body,
-                Err(e) => {
-                    output.error = format!("Failed to read response body: {e}");
-                    return Ok(output);
-                }
-            };
-            let latency = st.elapsed().as_secs_f64();
-            output.latency = latency;
-            output.ttft = latency;
-            output.success = true;
-
-            // Keep the client-side prompt_len when the server reports no usage.
-            if let Ok(PoolingResponse {
-                usage:
-                    Some(PoolingUsage {
-                        prompt_tokens: Some(tokens),
-                    }),
-            }) = serde_json::from_slice(&body)
-            {
-                output.prompt_len = tokens as usize;
-            }
-        } else {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            output.error = format!("HTTP {status}: {body}");
-        }
-
-        Ok(output)
+        Ok(send_json_request(input, client, &payload, output, prompt_tokens).await)
     }
 
     fn build_payload(&self, input: &RequestFuncInput) -> serde_json::Value {
