@@ -25,6 +25,7 @@ struct PoolingResponse {
 
 #[derive(serde::Deserialize)]
 struct PoolingUsage {
+    #[serde(alias = "input_tokens")]
     prompt_tokens: Option<u64>,
 }
 
@@ -53,6 +54,12 @@ impl PoolingBackend {
                     .get("documents")
                     .and_then(|documents| documents.as_array())
                     .map_or(0, |documents| documents.len()),
+                BackendKind::VllmSystemone => {
+                    payload["questions"].as_object().map_or(0, |q| q.len())
+                }
+                BackendKind::OpenaiDecisions => {
+                    payload["questions"].as_array().map_or(0, |q| q.len())
+                }
                 _ => unreachable!("PoolingBackend with non-pooling kind"),
             },
             ..Default::default()
@@ -193,6 +200,31 @@ impl PoolingBackend {
                     })
                 }
             }
+            BackendKind::VllmSystemone => serde_json::json!({
+                "model": model,
+                "state": input.prompt.as_ref(),
+                "questions": {
+                    "topic": {"type": "choice", "criteria": {
+                        "technology": null, "finance": null, "health": null, "other": null,
+                    }},
+                    "actionable": {"type": "noul", "instructions": "Is an action requested?"},
+                    "clarity": {"type": "score", "criteria": ["unclear", "mixed", "clear"]},
+                },
+            }),
+            BackendKind::OpenaiDecisions => serde_json::json!({
+                "model": model,
+                "input": input.prompt.as_ref(),
+                "questions": [
+                    {"type": "choice", "instructions": "Which topic fits?", "choices": [
+                        {"value": "technology"}, {"value": "finance"},
+                        {"value": "health"}, {"value": "other"},
+                    ]},
+                    {"type": "predicate", "instructions": "Is an action requested?"},
+                    {"type": "score", "instructions": "How clear is the text?", "levels": [
+                        {"label": "unclear"}, {"label": "mixed"}, {"label": "clear"},
+                    ]},
+                ],
+            }),
             _ => unreachable!("PoolingBackend with non-pooling kind"),
         };
 
@@ -311,6 +343,25 @@ mod tests {
         assert_eq!(payload["query"], "the query");
         assert_eq!(payload["documents"], serde_json::json!(["doc a", "doc b"]));
         assert_eq!(payload["truncate_prompt_tokens"], -1);
+    }
+
+    #[test]
+    fn test_decisions_payload_state_and_questions() {
+        for (kind, field) in [
+            (BackendKind::VllmSystemone, "state"),
+            (BackendKind::OpenaiDecisions, "input"),
+        ] {
+            let input = RequestFuncInput {
+                model: "qwen".to_string(),
+                prompt: Arc::from("the state"),
+                ignore_eos: true,
+                ..Default::default()
+            };
+            let payload = PoolingBackend { kind }.build_payload(&input);
+            assert_eq!(payload[field], "the state");
+            let keys: Vec<&String> = payload.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["model", field, "questions"]);
+        }
     }
 
     #[test]

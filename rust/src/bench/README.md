@@ -441,6 +441,8 @@ to measure a concurrent serving-style workload.
 | `openai-embeddings-chat` | `/v1/embeddings` | Chat-format embedding (supports multimodal content) |
 | `vllm-pooling` | `/pooling` | vLLM native pooling endpoint |
 | `vllm-rerank` | `/v1/rerank` | vLLM reranking (query from prompt, documents via `--extra-body`) |
+| `vllm-systemone` | `/v1/systemone` | vLLM structured decisions (prompt as `state`; three default questions, override via `--extra-body '{"questions": ...}'`) |
+| `openai-decisions` | `/v1/decisions` | OpenAI Decisions API (prompt as `input`; same defaults and override) |
 
 Pooling backends are non-streaming and report E2EL (end-to-end latency) only. Use `--dataset-name sharegpt` or `hf` for text-based embedding/rerank benchmarks, or `random` for token-ID-based embedding benchmarks.
 

@@ -22,6 +22,10 @@ pub enum BackendKind {
     VllmPooling,
     #[value(name = "vllm-rerank")]
     VllmRerank,
+    #[value(name = "vllm-systemone")]
+    VllmSystemone,
+    #[value(name = "openai-decisions")]
+    OpenaiDecisions,
 }
 
 impl BackendKind {
@@ -35,6 +39,8 @@ impl BackendKind {
             Self::OpenaiEmbeddingsChat => "openai-embeddings-chat",
             Self::VllmPooling => "vllm-pooling",
             Self::VllmRerank => "vllm-rerank",
+            Self::VllmSystemone => "vllm-systemone",
+            Self::OpenaiDecisions => "openai-decisions",
         }
     }
 
@@ -45,7 +51,9 @@ impl BackendKind {
             Self::OpenaiEmbeddings
             | Self::OpenaiEmbeddingsChat
             | Self::VllmPooling
-            | Self::VllmRerank => false,
+            | Self::VllmRerank
+            | Self::VllmSystemone
+            | Self::OpenaiDecisions => false,
         }
     }
 
@@ -57,6 +65,8 @@ impl BackendKind {
                 | Self::OpenaiEmbeddingsChat
                 | Self::VllmPooling
                 | Self::VllmRerank
+                | Self::VllmSystemone
+                | Self::OpenaiDecisions
         )
     }
 }
@@ -728,6 +738,8 @@ impl BenchServeArgs {
             }
             BackendKind::VllmPooling => "/pooling".to_string(),
             BackendKind::VllmRerank => "/v1/rerank".to_string(),
+            BackendKind::VllmSystemone => "/v1/systemone".to_string(),
+            BackendKind::OpenaiDecisions => "/v1/decisions".to_string(),
         }
     }
 
