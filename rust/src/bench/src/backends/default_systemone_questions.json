@@ -1,0 +1,25 @@
+{
+  "topic": {
+    "type": "choice",
+    "instructions": "Which topic best describes the text?",
+    "criteria": {
+      "technology": null,
+      "finance": null,
+      "health": null,
+      "other": null
+    }
+  },
+  "actionable": {
+    "type": "noul",
+    "instructions": "Does the text ask the reader to do something?"
+  },
+  "clarity": {
+    "type": "score",
+    "instructions": "How clearly is the text written?",
+    "criteria": [
+      "unclear",
+      "mixed",
+      "clear"
+    ]
+  }
+}

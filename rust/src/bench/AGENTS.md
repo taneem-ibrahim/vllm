@@ -44,6 +44,7 @@ cargo test -p vllm-bench -- --ignored
     - `openai_completions.rs` — `/v1/completions` backend
     - `openai_chat.rs` — `/v1/chat/completions` backend (uses `input.messages` when set; zero-copy raw JSON payload for multimodal)
     - `pooling.rs` — Non-streaming pooling/embedding backends: `openai-embeddings`, `openai-embeddings-chat`, `vllm-pooling`, `vllm-rerank`
+    - `decisions.rs` — Non-streaming decisions backends: `vllm-systemone`, `openai-decisions`; builds the per-run `questions` (`--decision-questions-path`, `--decision-num-questions`; defaults in `default_*_questions.json`, kept equal to Python by `tests/benchmarks/test_decisions_request_func.py`)
 - `src/datasets/random.rs` — Random dataset generation with rayon parallelism
 - `src/datasets/random_mm.rs` — Random multimodal dataset (synthetic JPEG images, bucket config sampling, pre-serialized JSON fragments); `--enable-multimodal-chat` pre-builds the chat `messages` array at dataset time (mirrors Python's `apply_multimodal_chat_transformation`)
 - `src/datasets/sharegpt.rs` — ShareGPT JSON loader + HuggingFace Hub auto-download with caching

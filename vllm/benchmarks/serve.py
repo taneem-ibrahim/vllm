@@ -43,6 +43,7 @@ import numpy as np
 from tqdm.asyncio import tqdm
 
 from vllm.benchmarks.datasets import SampleRequest, add_dataset_parser, get_samples
+from vllm.benchmarks.lib.decisions import DECISION_BACKENDS, build_decision_questions
 from vllm.benchmarks.lib.endpoint_request_func import (
     ASYNC_REQUEST_FUNCS,
     OPENAI_COMPATIBLE_BACKENDS,
@@ -1871,7 +1872,7 @@ def add_cli_args(parser: FlexibleArgumentParser):
         'Allowed metric names are "ttft", "tpot", "itl", "e2el", '
         '"client_queue_time", "e2el_including_client_queue". '
         'If not specified, defaults to "ttft,tpot,itl" for generative models '
-        'and "e2el" for pooling models.',
+        'and "e2el" for pooling models and decisions backends.',
     )
     parser.add_argument(
         "--metric-percentiles",
@@ -2027,6 +2028,24 @@ def add_cli_args(parser: FlexibleArgumentParser):
         'Example: \'{"chat_template_kwargs":{"enable_thinking":false}}\'',
         type=json.loads,
         default=None,
+    )
+    parser.add_argument(
+        "--decision-questions-path",
+        type=str,
+        default=None,
+        help="Path to a JSON file with the questions that every request of a "
+        "decisions backend asks, in the request format of the backend: an "
+        "object of question id to question for 'vllm-systemone', an array "
+        "of questions for 'openai-decisions'. If not specified, one choice, "
+        "one yes/no and one score question are asked.",
+    )
+    parser.add_argument(
+        "--decision-num-questions",
+        type=int,
+        default=None,
+        help="Number of questions per request for a decisions backend. The "
+        "questions are truncated, or repeated under new ids, to reach this "
+        "number. If not specified, every question is asked once.",
     )
     parser.add_argument(
         "--skip-tokenizer-init",
@@ -2227,6 +2246,20 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         # for any non self-timed trace, this is False
         args.self_timed = False
 
+    decision_questions = None
+    if args.backend in DECISION_BACKENDS:
+        decision_questions = build_decision_questions(
+            args.backend, args.decision_questions_path, args.decision_num_questions
+        )
+    elif (
+        args.decision_questions_path is not None
+        or args.decision_num_questions is not None
+    ):
+        raise ValueError(
+            "--decision-questions-path and --decision-num-questions require a "
+            f"decisions backend: {sorted(DECISION_BACKENDS)}."
+        )
+
     # Load the dataset.
     input_requests = get_samples(args, tokenizer)
 
@@ -2238,7 +2271,12 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     goodput_config_dict = check_goodput_args(args)
 
     backend = args.backend
-    task_type = TaskType.POOLING if backend in POOLING_BACKENDS else TaskType.GENERATION
+    # A decision is one non-streamed response, so it is measured like pooling.
+    task_type = (
+        TaskType.POOLING
+        if backend in POOLING_BACKENDS or backend in DECISION_BACKENDS
+        else TaskType.GENERATION
+    )
 
     # Collect the sampling parameters.
     if task_type == TaskType.GENERATION:
@@ -2277,6 +2315,8 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
 
     extra_body = args.extra_body or {}
     extra_body = {**sampling_params, **extra_body}
+    if decision_questions is not None:
+        extra_body = {"questions": decision_questions, **extra_body}
 
     percentile_metrics: str = args.percentile_metrics or default_percentile_metrics
 

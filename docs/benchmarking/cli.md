@@ -1617,3 +1617,90 @@ to account for the extra prompt which is the query. The token accounting to repo
 throughput numbers correctly is also adjusted.
 
 </details>
+
+### Decisions Benchmark
+
+Benchmark the performance of [structured decisions](../models/structured_decisions_models.md) requests in vLLM.
+
+<details class="admonition abstract" markdown="1">
+<summary>Show more</summary>
+
+A decision asks a set of typed questions about a state and returns a probability
+for every allowed answer. Choose the backend by the API to benchmark:
+
+| API                        | Backend            | Endpoint        |
+|----------------------------|--------------------|-----------------|
+| TypeSafe System One (vLLM) | `vllm-systemone`   | `/v1/systemone` |
+| OpenAI Decisions           | `openai-decisions` | `/v1/decisions` |
+
+The prompts of any text dataset are sent as the states. Batched
+(`--random-batch-size`) and pre-tokenized datasets are not supported, because a
+decision reads one text state.
+
+Start the server:
+
+```bash
+vllm serve Qwen/Qwen3-0.6B --logprobs-mode raw_logprobs
+```
+
+Run the benchmark:
+
+```bash
+vllm bench serve \
+  --model Qwen/Qwen3-0.6B \
+  --backend vllm-systemone \
+  --endpoint /v1/systemone \
+  --dataset-name random \
+  --random-input-len 512 \
+  --num-prompts 100 \
+  --decision-num-questions 8
+```
+
+By default every request asks one `choice`, one yes/no and one `score` question.
+Two options shape the questions:
+
+- `--decision-num-questions` sets the number of questions per request. The
+  questions are truncated, or repeated under new ids, to reach that number.
+- `--decision-questions-path` reads the questions from a JSON file in the request
+  format of the backend: an object of question id to question for
+  `vllm-systemone`, an array of questions for `openai-decisions`.
+
+For example, to benchmark your own questions on the OpenAI Decisions API, save
+them as `questions.json`:
+
+```json
+[
+  {
+    "type": "choice",
+    "name": "team",
+    "instructions": "Which team should handle this ticket?",
+    "choices": [{"value": "billing"}, {"value": "shipping"}, {"value": "security"}]
+  },
+  {
+    "type": "predicate",
+    "name": "urgent",
+    "instructions": "Does the customer need a reply within the hour?"
+  }
+]
+```
+
+```bash
+vllm bench serve \
+  --model Qwen/Qwen3-0.6B \
+  --backend openai-decisions \
+  --endpoint /v1/decisions \
+  --dataset-name sharegpt \
+  --dataset-path <your data path>/ShareGPT_V3_unfiltered_cleaned_split.json \
+  --decision-questions-path questions.json
+```
+
+Other request fields, such as `joint` or `chat_template_kwargs`, can be set with
+`--extra-body`.
+
+A decision is one non-streamed response, so the result reports end-to-end
+latency, as for embedding and reranker benchmarks. Each question counts as one
+input: `Input throughput (inputs/s)` is the number of questions answered per
+second. `Total input tokens` is taken from the usage that the server reports,
+which counts the state once for every question that is read on its own.
+
+</details>

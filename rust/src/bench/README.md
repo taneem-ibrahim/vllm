@@ -14,7 +14,7 @@ vllm-bench --backend vllm --base-url http://127.0.0.1:8000 \
 - **Fast** — ~7 ms startup, single ~7 MB static binary, no Python imports.
 - **Scales** — `Arc<str>` prompt sharing + mimalloc keep memory <100 MB at 1400+ concurrency.
 - **Many datasets** — `random`, `random-mm` (VLM), `sharegpt`, `speed-bench`, and any HuggingFace dataset.
-- **Many backends** — completions, chat, embeddings, pooling, and rerank.
+- **Many backends** — completions, chat, embeddings, pooling, rerank, and decisions.
 - **Beyond a single run** — concurrency/rate **sweeps**, **multi-run** stats, **multi-turn** conversations, **LoRA** multi-adapter, and result **comparison**.
 - **Steady-state metrics** — throughput/latency measured over the saturated plateau, excluding ramp-up and drain.
 - **Parity** — JSON output schema and timing semantics match Python `vllm bench serve` exactly.
@@ -442,6 +442,15 @@ to measure a concurrent serving-style workload.
 | `vllm-pooling` | `/pooling` | vLLM native pooling endpoint |
 | `vllm-rerank` | `/v1/rerank` | vLLM reranking (query from prompt, documents via `--extra-body`) |
 
+### Decisions
+
+| Backend | API Endpoint | Description |
+| --------- | ------------- | ------------- |
+| `vllm-systemone` | `/v1/systemone` | vLLM structured decisions (prompt as `state`, an object of questions) |
+| `openai-decisions` | `/v1/decisions` | OpenAI Decisions API (prompt as `input`, an array of questions) |
+
+Every request asks the same questions about its prompt: by default one choice, one yes/no and one score question. `--decision-num-questions` truncates or repeats them to a given count, and `--decision-questions-path` reads them from a JSON file in the request format of the backend. Results are reported like the pooling backends, with each question counted as one input. Batched (`--random-batch-size`) and token-ID (`--prompt-token-ids`) prompts are rejected, because a decision reads one text state.
+
 Pooling backends are non-streaming and report E2EL (end-to-end latency) only. Use `--dataset-name sharegpt` or `hf` for text-based embedding/rerank benchmarks, or `random` for token-ID-based embedding benchmarks.
 
 ## Supported Datasets
@@ -487,7 +496,7 @@ Run `vllm-bench --help` for the authoritative list. Grouped reference below.
 
 | Flag | Default | Description |
 | ------ | --------- | ------------- |
-| `--backend` | `openai` | Backend type (`vllm`, `openai`, `openai-chat`, `openai-responses`, `openai-embeddings`, `openai-embeddings-chat`, `vllm-pooling`, `vllm-rerank`) |
+| `--backend` | `openai` | Backend type (`vllm`, `openai`, `openai-chat`, `openai-responses`, `openai-embeddings`, `openai-embeddings-chat`, `vllm-pooling`, `vllm-rerank`, `vllm-systemone`, `openai-decisions`) |
 | `--base-url` | — | Server base URL (overrides `--host`/`--port`) |
 | `--host` | `127.0.0.1` | Server host |
 | `--port` | `8000` | Server port |
@@ -591,7 +600,7 @@ Merged into the request body. Only effective with generation backends (`vllm`, `
 | `--append-result` | `false` | Append to existing JSON file (JSONL format) |
 | `--result-dir` | — | Directory for result files |
 | `--result-filename` | Auto | Custom result filename |
-| `--percentile-metrics` | `ttft,tpot,itl,e2el` | Metrics for percentile reporting (pooling defaults to `e2el` only) |
+| `--percentile-metrics` | `ttft,tpot,itl,e2el` | Metrics for percentile reporting (pooling and decisions default to `e2el` only) |
 | `--metric-percentiles` | `99` | Percentile values to compute |
 | `--sweep-summary-percentiles` | — | Extra percentiles for sweep summary tables (auto-added to computed set) |
 | `--goodput` | — | SLO pairs for goodput (`ttft:100 tpot:50 e2el:500`, values in ms) |
@@ -805,7 +814,8 @@ src/
 │   ├── openai_completions.rs # /v1/completions backend
 │   ├── openai_chat.rs       # /v1/chat/completions backend
 │   ├── openai_responses.rs  # /v1/responses backend
-│   └── pooling.rs           # Embedding/pooling/rerank backends (non-streaming)
+│   ├── pooling.rs           # Embedding/pooling/rerank backends (non-streaming)
+│   └── decisions.rs         # Decisions backends (non-streaming) and their questions
 ├── datasets/
 │   ├── mod.rs               # SampleRequest, ConversationTurn, MultiTurnConversation types
 │   ├── random.rs            # Random dataset with rayon parallelism

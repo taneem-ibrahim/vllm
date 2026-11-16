@@ -17,6 +17,8 @@
 --custom-output-len
 --dataset-name
 --dataset-path
+--decision-num-questions
+--decision-questions-path
 --disable-shuffle
 --disable-tqdm
 --enable-multimodal-chat

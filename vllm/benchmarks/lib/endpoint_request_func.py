@@ -18,6 +18,8 @@ import aiohttp
 import regex as re
 from tqdm.asyncio import tqdm
 
+from .decisions import OPENAI_DECISIONS_BACKEND, SYSTEMONE_BACKEND
+
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 
@@ -875,6 +877,7 @@ async def _run_pooling_request(
     pbar: tqdm | None = None,
     num_input_sequences: int = 1,
     prompt_len: int = 0,
+    prompt_tokens_key: str = "prompt_tokens",
 ) -> RequestFuncOutput:
     output = RequestFuncOutput(num_input_sequences=num_input_sequences)
     st = time.perf_counter()
@@ -901,7 +904,7 @@ async def _run_pooling_request(
 
                 output.success = True
                 output.generated_text = ""
-                output.prompt_len = usage.get("prompt_tokens", 0)
+                output.prompt_len = usage.get(prompt_tokens_key, 0)
             else:
                 output.success = False
                 output.error = response.reason or ""
@@ -1181,6 +1184,79 @@ async def async_request_vllm_pooling(
     )
 
 
+async def _async_request_decisions(
+    request_func_input: RequestFuncInput,
+    session: aiohttp.ClientSession,
+    pbar: tqdm | None,
+    *,
+    api_name: str,
+    url_suffix: str,
+    input_field: str,
+) -> RequestFuncOutput:
+    api_url = request_func_input.api_url
+    _validate_api_url(api_url, api_name, url_suffix)
+
+    if not isinstance(request_func_input.prompt, str):
+        raise ValueError(
+            f"{api_name} takes one text prompt per request, so batched and "
+            "pre-tokenized datasets are not supported."
+        )
+
+    payload: dict[str, Any] = {
+        "model": request_func_input.model_name
+        if request_func_input.model_name
+        else request_func_input.model,
+        input_field: request_func_input.prompt,
+    }
+    # Both endpoints reject unknown fields, so `ignore_eos` is not sent.
+    if request_func_input.extra_body:
+        payload.update(request_func_input.extra_body)
+
+    headers = _get_headers("application/json")
+    _update_headers_common(headers, request_func_input)
+
+    return await _run_pooling_request(
+        session,
+        api_url,
+        payload=payload,
+        headers=headers,
+        pbar=pbar,
+        num_input_sequences=len(payload.get("questions") or ()),
+        prompt_len=request_func_input.prompt_len,
+        prompt_tokens_key="input_tokens",
+    )
+
+
+async def async_request_vllm_systemone(
+    request_func_input: RequestFuncInput,
+    session: aiohttp.ClientSession,
+    pbar: tqdm | None = None,
+) -> RequestFuncOutput:
+    return await _async_request_decisions(
+        request_func_input,
+        session,
+        pbar,
+        api_name="vLLM Structured Decisions API",
+        url_suffix="systemone",
+        input_field="state",
+    )
+
+
+async def async_request_openai_decisions(
+    request_func_input: RequestFuncInput,
+    session: aiohttp.ClientSession,
+    pbar: tqdm | None = None,
+) -> RequestFuncOutput:
+    return await _async_request_decisions(
+        request_func_input,
+        session,
+        pbar,
+        api_name="OpenAI Decisions API",
+        url_suffix="decisions",
+        input_field="input",
+    )
+
+
 # TODO: Add more request functions for different API protocols.
 ASYNC_REQUEST_FUNCS: dict[str, RequestFunc] = {
     "vllm": async_request_openai_completions,
@@ -1198,6 +1274,8 @@ ASYNC_REQUEST_FUNCS: dict[str, RequestFunc] = {
     # (Infinity embedding server does not support vlm2vec)
     "vllm-pooling": async_request_vllm_pooling,
     "vllm-rerank": async_request_vllm_rerank,
+    SYSTEMONE_BACKEND: async_request_vllm_systemone,
+    OPENAI_DECISIONS_BACKEND: async_request_openai_decisions,
 }
 
 POOLING_BACKENDS = {

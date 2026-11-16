@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::backends::decisions::DecisionsBackend;
 use crate::cli::{
     BackendKind, BenchServeArgs, DatasetName, LoraAssignment, RampUpStrategy, SpeedBenchConfig,
 };
@@ -335,6 +336,46 @@ impl BenchConfig {
             }
         }
 
+        // The questions of a decisions run travel in extra_body, so that every
+        // request path (ready check, warmup, benchmark) sends the same ones.
+        match DecisionsBackend::from_kind(args.backend) {
+            Some(decisions) => {
+                if args.prompt_token_ids {
+                    return Err(BenchError::Config(
+                        "--prompt-token-ids is not supported by decisions backends: \
+                         a decision reads one text state"
+                            .into(),
+                    ));
+                }
+                let questions = decisions.build_questions(
+                    args.decision_questions_path.as_deref(),
+                    args.decision_num_questions,
+                )?;
+                let mut body = match extra_body.take() {
+                    None => serde_json::Map::new(),
+                    Some(serde_json::Value::Object(body)) => body,
+                    Some(_) => {
+                        return Err(BenchError::Config(
+                            "--extra-body must be a JSON object for decisions backends".into(),
+                        ));
+                    }
+                };
+                // As for the sampling parameters, --extra-body wins.
+                body.entry("questions").or_insert(questions);
+                extra_body = Some(serde_json::Value::Object(body));
+            }
+            None if args.decision_questions_path.is_some()
+                || args.decision_num_questions.is_some() =>
+            {
+                return Err(BenchError::Config(
+                    "--decision-questions-path and --decision-num-questions require a \
+                     decisions backend: 'vllm-systemone' or 'openai-decisions'."
+                        .into(),
+                ));
+            }
+            None => {}
+        }
+
         if uses_server_default_temperature(args.backend, extra_body.as_ref()) {
             tracing::warn!(
                 "vllm-bench does not set temperature==0 (greedy) in requests by default. \
@@ -365,7 +406,7 @@ impl BenchConfig {
         let ramp_up = parse_ramp_up(args)?;
 
         // Default percentile metrics based on backend type
-        let default_percentile_metrics = if args.backend.is_pooling() {
+        let default_percentile_metrics = if args.backend.is_non_streaming() {
             "e2el"
         } else {
             "ttft,tpot,itl,e2el"
@@ -482,7 +523,8 @@ impl BenchConfig {
         // Exception: multi-turn mode, where ignore_eos causes unbounded context growth
         // across turns. Multi-turn uses min_tokens instead for output length control.
         // Pooling backends don't generate tokens, so ignore_eos is irrelevant.
-        let ignore_eos = if args.backend.is_pooling() {
+        // The decisions endpoints reject it as an unknown field.
+        let ignore_eos = if args.backend.is_non_streaming() {
             false
         } else {
             args.ignore_eos
@@ -494,10 +536,10 @@ impl BenchConfig {
                     && !args.multi_turn)
         };
 
-        // Pooling backends don't support multi-turn
-        if args.backend.is_pooling() && args.multi_turn {
+        // Pooling and decisions backends don't support multi-turn
+        if args.backend.is_non_streaming() && args.multi_turn {
             return Err(BenchError::Config(
-                "Pooling/embedding backends do not support --multi-turn".into(),
+                "Pooling/embedding and decisions backends do not support --multi-turn".into(),
             ));
         }
 
@@ -1023,7 +1065,7 @@ fn uses_server_default_temperature(
     backend: BackendKind,
     extra_body: Option<&serde_json::Value>,
 ) -> bool {
-    !backend.is_pooling()
+    !backend.is_non_streaming()
         && extra_body
             .and_then(|b| b.get("temperature"))
             .is_none_or(serde_json::Value::is_null)
@@ -1720,5 +1762,80 @@ mod tests {
         assert_eq!(rr.output_bounds(1).0, 1); // clamped
         let fixed = RangeRatio::parse("0.0").unwrap();
         assert_eq!(fixed.input_bounds(8192), (8192, 8192));
+    }
+
+    fn decisions_args(extra: &[&'static str]) -> Vec<&'static str> {
+        let mut args = vec!["vllm-bench", "--model", "test-model"];
+        args.extend(extra);
+        args
+    }
+
+    /// A decisions run is measured like pooling and sends its questions on
+    /// every request path, with --extra-body taking precedence.
+    #[test]
+    fn test_decisions_backends_resolve_endpoint_and_questions() {
+        for (backend, endpoint) in [
+            ("vllm-systemone", "/v1/systemone"),
+            ("openai-decisions", "/v1/decisions"),
+        ] {
+            let args = decisions_args(&["--backend", backend, "--decision-num-questions", "5"]);
+            let config = BenchConfig::from_args(&parse_args(args)).unwrap();
+            assert!(config.api_url.ends_with(endpoint), "{}", config.api_url);
+            assert_eq!(config.selected_percentile_metrics, ["e2el"]);
+            assert!(!config.ignore_eos);
+            let questions = &config.extra_body.as_ref().unwrap()["questions"];
+            let num_questions = questions.as_object().map_or_else(
+                || questions.as_array().map_or(0, Vec::len),
+                serde_json::Map::len,
+            );
+            assert_eq!(num_questions, 5);
+        }
+
+        let args = decisions_args(&[
+            "--backend",
+            "openai-decisions",
+            "--extra-body",
+            r#"{"questions": [], "joint": true}"#,
+        ]);
+        let config = BenchConfig::from_args(&parse_args(args)).unwrap();
+        assert_eq!(
+            config.extra_body,
+            Some(serde_json::json!({"questions": [], "joint": true}))
+        );
+    }
+
+    /// Flags and inputs a decision request cannot honor fail at startup.
+    #[test]
+    fn test_decisions_reject_unsupported_combinations() {
+        for (extra, expected) in [
+            (
+                &["--decision-num-questions", "4"][..],
+                "require a decisions backend",
+            ),
+            (
+                &["--backend", "vllm-systemone", "--prompt-token-ids"][..],
+                "--prompt-token-ids is not supported",
+            ),
+            (
+                &["--backend", "vllm-systemone", "--random-batch-size", "2"][..],
+                "--random-batch-size > 1",
+            ),
+            (
+                &["--backend", "openai-decisions", "--multi-turn"][..],
+                "do not support --multi-turn",
+            ),
+            (
+                &["--backend", "openai-decisions", "--temperature", "0"][..],
+                "Sampling parameters",
+            ),
+            (
+                &["--backend", "openai-decisions", "--extra-body", "[]"][..],
+                "--extra-body must be a JSON object",
+            ),
+        ] {
+            let result = BenchConfig::from_args(&parse_args(decisions_args(extra)));
+            let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(err.contains(expected), "{extra:?}: got {err:?}");
+        }
     }
 }

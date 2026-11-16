@@ -111,6 +111,8 @@ def _args(dataset_path: str) -> argparse.Namespace:
         ramp_up_end_rps=None,
         ready_check_timeout_sec=0,
         extra_body=None,
+        decision_questions_path=None,
+        decision_num_questions=None,
         top_p=None,
         top_k=None,
         min_p=None,

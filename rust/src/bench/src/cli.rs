@@ -22,6 +22,10 @@ pub enum BackendKind {
     VllmPooling,
     #[value(name = "vllm-rerank")]
     VllmRerank,
+    #[value(name = "vllm-systemone")]
+    VllmSystemone,
+    #[value(name = "openai-decisions")]
+    OpenaiDecisions,
 }
 
 impl BackendKind {
@@ -35,6 +39,8 @@ impl BackendKind {
             Self::OpenaiEmbeddingsChat => "openai-embeddings-chat",
             Self::VllmPooling => "vllm-pooling",
             Self::VllmRerank => "vllm-rerank",
+            Self::VllmSystemone => "vllm-systemone",
+            Self::OpenaiDecisions => "openai-decisions",
         }
     }
 
@@ -45,7 +51,9 @@ impl BackendKind {
             Self::OpenaiEmbeddings
             | Self::OpenaiEmbeddingsChat
             | Self::VllmPooling
-            | Self::VllmRerank => false,
+            | Self::VllmRerank
+            | Self::VllmSystemone
+            | Self::OpenaiDecisions => false,
         }
     }
 
@@ -58,6 +66,18 @@ impl BackendKind {
                 | Self::VllmPooling
                 | Self::VllmRerank
         )
+    }
+
+    /// Return true if the backend asks typed questions about a state
+    /// (`/v1/systemone`, `/v1/decisions`).
+    pub fn is_decisions(self) -> bool {
+        matches!(self, Self::VllmSystemone | Self::OpenaiDecisions)
+    }
+
+    /// Return true if the backend reads one non-streamed response per request
+    /// (pooling and decisions), so only end-to-end latency is measured.
+    pub fn is_non_streaming(self) -> bool {
+        self.is_pooling() || self.is_decisions()
     }
 }
 
@@ -491,6 +511,20 @@ pub struct BenchServeArgs {
     #[arg(long)]
     pub extra_body: Option<String>,
 
+    /// Path to a JSON file with the questions that every request of a
+    /// decisions backend asks, in the request format of the backend: an object
+    /// of question id to question for 'vllm-systemone', an array of questions
+    /// for 'openai-decisions'. If not specified, one choice, one yes/no and
+    /// one score question are asked.
+    #[arg(long)]
+    pub decision_questions_path: Option<String>,
+
+    /// Number of questions per request for a decisions backend. The questions
+    /// are truncated, or repeated under new ids, to reach this number. If not
+    /// specified, every question is asked once.
+    #[arg(long)]
+    pub decision_num_questions: Option<usize>,
+
     /// Key-value pairs for metadata (KEY=VALUE).
     #[arg(long = "metadata", num_args = 1..)]
     pub metadata: Option<Vec<String>>,
@@ -728,6 +762,8 @@ impl BenchServeArgs {
             }
             BackendKind::VllmPooling => "/pooling".to_string(),
             BackendKind::VllmRerank => "/v1/rerank".to_string(),
+            BackendKind::VllmSystemone => "/v1/systemone".to_string(),
+            BackendKind::OpenaiDecisions => "/v1/decisions".to_string(),
         }
     }
 

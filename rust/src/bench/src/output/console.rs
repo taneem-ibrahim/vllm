@@ -15,9 +15,11 @@ pub fn print_results(
     has_tokenizer: bool,
     spec_decode_stats: Option<&SpecDecodeStats>,
 ) {
-    let is_pooling = config.backend.is_pooling();
+    let is_pooling = config.backend.is_non_streaming();
 
-    if is_pooling {
+    if config.backend.is_decisions() {
+        println!("{:=^60}", " Decisions Benchmark Result ");
+    } else if is_pooling {
         println!("{:=^60}", " Embedding/Pooling Benchmark Result ");
     } else {
         println!("{:=^60}", " Serving Benchmark Result ");

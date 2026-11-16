@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+pub mod decisions;
 pub mod openai_chat;
 pub mod openai_completions;
 pub mod openai_responses;
@@ -231,6 +232,7 @@ pub enum Backend {
     OpenAIChat(openai_chat::OpenAIChatBackend),
     OpenAIResponses(openai_responses::OpenAIResponsesBackend),
     Pooling(pooling::PoolingBackend),
+    Decisions(decisions::DecisionsBackend),
 }
 
 impl Backend {
@@ -245,6 +247,7 @@ impl Backend {
             Backend::OpenAIChat(b) => b.send_request(input, client).await,
             Backend::OpenAIResponses(b) => b.send_request(input, client).await,
             Backend::Pooling(b) => b.send_request(input, client).await,
+            Backend::Decisions(b) => b.send_request(input, client).await,
         }
     }
 }
@@ -258,6 +261,12 @@ pub fn get_backend(kind: BackendKind) -> Result<Backend> {
         BackendKind::OpenaiChat => Ok(Backend::OpenAIChat(openai_chat::OpenAIChatBackend)),
         BackendKind::OpenaiResponses => Ok(Backend::OpenAIResponses(
             openai_responses::OpenAIResponsesBackend,
+        )),
+        BackendKind::VllmSystemone => {
+            Ok(Backend::Decisions(decisions::DecisionsBackend::Systemone))
+        }
+        BackendKind::OpenaiDecisions => Ok(Backend::Decisions(
+            decisions::DecisionsBackend::OpenaiDecisions,
         )),
         kind if kind.is_pooling() => Ok(Backend::Pooling(pooling::PoolingBackend { kind })),
         _ => unreachable!(),

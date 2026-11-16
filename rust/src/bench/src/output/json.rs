@@ -103,7 +103,7 @@ pub fn build_result_json(
         insert_ramp_up(&mut result, ramp_up);
     }
 
-    let is_pooling = config.backend.is_pooling();
+    let is_pooling = config.backend.is_non_streaming();
 
     // Benchmark results
     result.insert("duration".into(), serde_json::json!(benchmark_duration));

@@ -1,0 +1,42 @@
+[
+  {
+    "type": "choice",
+    "name": "topic",
+    "instructions": "Which topic best describes the text?",
+    "choices": [
+      {
+        "value": "technology"
+      },
+      {
+        "value": "finance"
+      },
+      {
+        "value": "health"
+      },
+      {
+        "value": "other"
+      }
+    ]
+  },
+  {
+    "type": "predicate",
+    "name": "actionable",
+    "instructions": "Does the text ask the reader to do something?"
+  },
+  {
+    "type": "score",
+    "name": "clarity",
+    "instructions": "How clearly is the text written?",
+    "levels": [
+      {
+        "label": "unclear"
+      },
+      {
+        "label": "mixed"
+      },
+      {
+        "label": "clear"
+      }
+    ]
+  }
+]
